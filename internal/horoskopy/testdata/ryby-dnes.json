@@ -1,0 +1,243 @@
+{
+    "_cls": "HoroscopeArticlePublished",
+    "_created": "2026-05-21 10:52:06",
+    "_id": "6a9f4eebf749b40d332d039c",
+    "_updated": "2026-05-21 10:52:06",
+    "autoSlug": true,
+    "caption": "6a0ab41204adf158fe14a50a",
+    "ccid": 101933227,
+    "changeFreq": "hourly",
+    "content": [
+        {
+            "_cls": "ParagraphMolecule",
+            "component": "molecule.paragraph.Paragraph",
+            "componentId": "6a9f4eebf749b40d332d0390",
+            "properties": {
+                "_cls": "_ParagraphMoleculeProperties",
+                "text": "Dnešek vás upozorní na napětí, které se může nenápadně hromadit v těle. Na chvíli zpomalte, uvolněte se a změňte polohu. Krátké přerušení pracovního rytmu může přinést úlevu a zabránit tomu, aby se nepohoda dál stupňovala. Dopřejte tělu pauzu."
+            },
+            "settings": {
+                "_cls": "BaseMoleculeSettings"
+            }
+        },
+        {
+            "_cls": "HeadlineH2Molecule",
+            "component": "molecule.headline.H2",
+            "componentId": "6a9f4eebf749b40d332d0391",
+            "properties": {
+                "_cls": "_HeadlineMoleculeProperties",
+                "text": "Láska a přátelství"
+            },
+            "settings": {
+                "_cls": "BaseMoleculeSettings"
+            }
+        },
+        {
+            "_cls": "ParagraphMolecule",
+            "component": "molecule.paragraph.Paragraph",
+            "componentId": "6a9f4eebf749b40d332d0392",
+            "properties": {
+                "_cls": "_ParagraphMoleculeProperties",
+                "text": "Nepříznivý den pro vaše znamení přinese v lásce zbytečné napětí. Neřešte maličkosti a dejte citům trochu více klidu večer."
+            },
+            "settings": {
+                "_cls": "BaseMoleculeSettings"
+            }
+        },
+        {
+            "_cls": "HeadlineH2Molecule",
+            "component": "molecule.headline.H2",
+            "componentId": "6a9f4eebf749b40d332d0393",
+            "properties": {
+                "_cls": "_HeadlineMoleculeProperties",
+                "text": "Peníze a práce"
+            },
+            "settings": {
+                "_cls": "BaseMoleculeSettings"
+            }
+        },
+        {
+            "_cls": "ParagraphMolecule",
+            "component": "molecule.paragraph.Paragraph",
+            "componentId": "6a9f4eebf749b40d332d0394",
+            "properties": {
+                "_cls": "_ParagraphMoleculeProperties",
+                "text": "Práce se začne zrychlovat a úkoly budou přibývat rychleji, než by vám bylo milé. Určete pořadí a nenechte se vláčet okolím."
+            },
+            "settings": {
+                "_cls": "BaseMoleculeSettings"
+            }
+        },
+        {
+            "_cls": "HeadlineH2Molecule",
+            "component": "molecule.headline.H2",
+            "componentId": "6a9f4eebf749b40d332d0395",
+            "properties": {
+                "_cls": "_HeadlineMoleculeProperties",
+                "text": "Rodina a vztahy"
+            },
+            "settings": {
+                "_cls": "BaseMoleculeSettings"
+            }
+        },
+        {
+            "_cls": "ParagraphMolecule",
+            "component": "molecule.paragraph.Paragraph",
+            "componentId": "6a9f4eebf749b40d332d0396",
+            "properties": {
+                "_cls": "_ParagraphMoleculeProperties",
+                "text": "Jedna nepříjemná pravda dnes visí ve vzduchu. Řekněte ji blízkému citlivě, ale na rovinu, mlčení by později bolelo víc."
+            },
+            "settings": {
+                "_cls": "BaseMoleculeSettings"
+            }
+        },
+        {
+            "_cls": "HeadlineH2Molecule",
+            "component": "molecule.headline.H2",
+            "componentId": "6a9f4eebf749b40d332d0397",
+            "properties": {
+                "_cls": "_HeadlineMoleculeProperties",
+                "text": "Zdraví a kondice"
+            },
+            "settings": {
+                "_cls": "BaseMoleculeSettings"
+            }
+        },
+        {
+            "_cls": "ParagraphMolecule",
+            "component": "molecule.paragraph.Paragraph",
+            "componentId": "6a9f4eebf749b40d332d0398",
+            "properties": {
+                "_cls": "_ParagraphMoleculeProperties",
+                "text": "Ramena nesou víc napětí, než si uvědomujete. Spusťte je dolů, zakružte pažemi a dopřejte krku chvíli bez pracovního shonu."
+            },
+            "settings": {
+                "_cls": "BaseMoleculeSettings"
+            }
+        },
+        {
+            "_cls": "HeadlineH2Molecule",
+            "component": "molecule.headline.H2",
+            "componentId": "6a9f4eebf749b40d332d0399",
+            "properties": {
+                "_cls": "_HeadlineMoleculeProperties",
+                "text": "Aktivity vhodné pro dnešní den"
+            },
+            "settings": {
+                "_cls": "BaseMoleculeSettings"
+            }
+        },
+        {
+            "_cls": "ParagraphMolecule",
+            "component": "molecule.paragraph.Paragraph",
+            "componentId": "6a9f4eebf749b40d332d039a",
+            "properties": {
+                "_cls": "_ParagraphMoleculeProperties",
+                "text": "Klidná večeře s partnerem, třídění pracovních úkolů, upřímný rozhovor, jemná jóga, pletení šály večer, procházka parkem."
+            },
+            "settings": {
+                "_cls": "BaseMoleculeSettings"
+            }
+        }
+    ],
+    "dateOfLastUpdate": "2026-09-08 01:55:23",
+    "dateOfPublication": "2026-05-21 10:55:31",
+    "dateOfUnpublication": null,
+    "discussionStatus": false,
+    "h1": "Horoskop na dnes",
+    "layout": "69c551cdf5f4bd39d6939c7d",
+    "metaRobots": [
+        "all"
+    ],
+    "metaTitle": "Ryby - Horoskop na dnes",
+    "perex": "Dnešek vás upozorní na napětí, které se může nenápadně hromadit v těle. Na chvíli zpomalte, uvolněte se a změňte polohu. Krátké přerušení pracovního rytmu může přinést úlevu a zabránit tomu, aby se nepohoda dál stupňovala.",
+    "priority": 0.8,
+    "protoSlug": "dnes",
+    "recommendDays": 0.0,
+    "recommendUntilDate": "2026-09-08 01:55:23",
+    "relations": [
+        {
+            "_cls": "Sign",
+            "signSlug": "beran",
+            "value": "60"
+        },
+        {
+            "_cls": "Sign",
+            "signSlug": "byk",
+            "value": "100"
+        },
+        {
+            "_cls": "Sign",
+            "signSlug": "blizenci",
+            "value": "-80"
+        },
+        {
+            "_cls": "Sign",
+            "signSlug": "rak",
+            "value": "100"
+        },
+        {
+            "_cls": "Sign",
+            "signSlug": "lev",
+            "value": "-20"
+        },
+        {
+            "_cls": "Sign",
+            "signSlug": "panna",
+            "value": "20"
+        },
+        {
+            "_cls": "Sign",
+            "signSlug": "vahy",
+            "value": "-40"
+        },
+        {
+            "_cls": "Sign",
+            "signSlug": "stir",
+            "value": "-100"
+        },
+        {
+            "_cls": "Sign",
+            "signSlug": "strelec",
+            "value": "60"
+        },
+        {
+            "_cls": "Sign",
+            "signSlug": "kozoroh",
+            "value": "0"
+        },
+        {
+            "_cls": "Sign",
+            "signSlug": "vodnar",
+            "value": "-40"
+        },
+        {
+            "_cls": "Sign",
+            "signSlug": "ryby",
+            "value": "60"
+        }
+    ],
+    "sections": [
+        "697c43d0a95f7a493a8a942e"
+    ],
+    "showMinistryOfFinanceWarning": false,
+    "slug": "horoskop-znameni-zverokruhu-ryby-dnes",
+    "status": "published",
+    "suggestionUpdated": "2026-09-08 01:55:23",
+    "sznPreviewType": "common",
+    "tags": [
+        130772
+    ],
+    "title": "Ryby dnes",
+    "uid": 546,
+    "useDefault": {
+        "_cls": "DocumentUseDefault",
+        "changeFreq": true,
+        "layouts": true,
+        "priority": true,
+        "recommendDays": true,
+        "videoportalTags": true
+    },
+    "versionStatus": "published"
+}

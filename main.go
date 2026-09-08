@@ -1,37 +1,19 @@
+// Command horoskopycli prints the horoskopy.cz horoscope for a zodiac sign.
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"log"
-	"net/http"
+	"io"
 	"os"
-	"regexp"
 	"strings"
-	"unicode"
 
-	"github.com/antchfx/htmlquery"
-	"golang.org/x/net/html"
-	"golang.org/x/text/runes"
-	"golang.org/x/text/transform"
-	"golang.org/x/text/unicode/norm"
+	"github.com/kozaktomas/horoskopycli/internal/horoskopy"
 )
 
-const baseURL = "https://www.horoskopy.cz"
-
-var signs = []string{
-	"beran",
-	"lev",
-	"strelec",
-	"byk",
-	"panna",
-	"kozoroh",
-	"blizenci",
-	"vahy",
-	"vodnar",
-	"rak",
-	"stir",
-	"ryby",
-}
+// errTooManyArguments is returned when more than a sign and a period are given.
+var errTooManyArguments = errors.New("too many arguments")
 
 // Taken from https://github.com/NaAbAsD/this_is_fine, thanks!
 const sorryMessage = `
@@ -57,134 +39,89 @@ Ouch, horoskopy.cz is probably down but I'm here for you! 🤗
             This is fine.
 `
 
-func main() {
-	if len(os.Args) != 2 {
-		fmt.Println("Please provide your sign")
-		fmt.Println("Signs: " + strings.Join(signs, ", "))
-		os.Exit(0)
-	}
+// fetcher downloads a horoscope. It is satisfied by horoskopy.Client and
+// replaced by a fake in tests.
+type fetcher interface {
+	Fetch(ctx context.Context, sign horoskopy.Sign, period horoskopy.Period) (horoskopy.Horoscope, error)
+}
 
-	sign := sanitizeSign(os.Args[1])
-	if !isSignValid(sign) {
-		fmt.Println("Please provide valid sign")
-		fmt.Println("Valid signs: " + strings.Join(signs, ", "))
+// main wires up the real client and turns a failure into a non-zero exit code.
+func main() {
+	if err := run(context.Background(), horoskopy.NewClient(), os.Args[1:], os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "horoskopycli: %s\n", err)
 		os.Exit(1)
 	}
-
-	fmt.Print(loadPrediction(sign))
 }
 
-func loadPrediction(sign string) string {
-	url := fmt.Sprintf("%s/%s", baseURL, sign)
-	res, err := http.DefaultClient.Get(url)
+// run parses args, fetches the requested horoscope and writes it to out.
+//
+// Called without arguments it prints usage and succeeds, so that a bare
+// invocation is not an error. Invalid input returns an error describing the
+// problem; an unreachable horoskopy.cz additionally writes an apology to out.
+func run(ctx context.Context, client fetcher, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		fmt.Fprint(out, usage())
+
+		return nil
+	}
+
+	sign, period, err := parseArgs(args)
 	if err != nil {
-		log.Fatalf("Could not get data from the server: %s", err)
+		return fmt.Errorf("%w\n\n%s", err, usage())
 	}
-	if res.StatusCode != http.StatusOK {
-		fmt.Print(sorryMessage)
-		log.Fatalf("Server returned status code %d", res.StatusCode)
-	}
-	doc, err := html.Parse(res.Body)
+
+	horoscope, err := client.Fetch(ctx, sign, period)
 	if err != nil {
-		log.Fatalf("Could not parse server response: %s", err)
+		if errors.Is(err, horoskopy.ErrUnavailable) {
+			fmt.Fprint(out, sorryMessage)
+		}
+
+		return err
 	}
 
-	return parsePrediction(doc)
+	fmt.Fprint(out, horoskopy.Render(horoscope))
+
+	return nil
 }
 
-func parsePrediction(document *html.Node) string {
-	contents, err := htmlquery.QueryAll(document, "//*[@id=\"content-detail\"]")
+// parseArgs reads the zodiac sign and the optional period from the command
+// line. The period defaults to today when omitted.
+func parseArgs(args []string) (horoskopy.Sign, horoskopy.Period, error) {
+	if len(args) > 2 {
+		return "", "", fmt.Errorf("%w: expected a sign and an optional period, got %d", errTooManyArguments, len(args))
+	}
+
+	sign, err := horoskopy.ParseSign(args[0])
 	if err != nil {
-		log.Fatalf("Invalid XPath expression: %s", err)
-	}
-	if len(contents) != 1 {
-		fmt.Print(sorryMessage)
-		log.Fatalf("Could not find content element")
-	}
-	content := contents[0]
-	read := false
-	el := content.FirstChild
-	sb := strings.Builder{}
-	for el != nil {
-		if el.Data == "h1" {
-			sb.WriteString(el.FirstChild.Data + "\n")
-			sb.WriteString(strings.Repeat("=", len(el.FirstChild.Data)) + "\n\n")
-		}
-
-		if el.Data == "h2" {
-			read = true
-		}
-
-		if read && el.Data == "div" && nodeHasClass(el, "brown") {
-			sb.WriteString("=> " + sanitizeString(el.FirstChild.Data) + "\n")
-		}
-
-		if read && el.Data == "p" {
-			sb.WriteString(sanitizeString(el.FirstChild.Data) + "\n\n")
-		}
-
-		if el.Data == "div" && nodeHasClass(el, "cleaner") {
-			read = false
-		}
-
-		el = el.NextSibling
+		return "", "", err
 	}
 
-	s := sb.String()
-	return s
-}
-
-var spaceReg = regexp.MustCompile(`\s+`)
-
-func sanitizeString(s string) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = spaceReg.ReplaceAllString(s, " ")
-	s = strings.TrimSpace(s)
-	return s
-}
-
-func nodeHasClass(n *html.Node, class string) bool {
-	for _, attr := range n.Attr {
-		if strings.EqualFold(attr.Key, "class") {
-			if attr.Val == "" {
-				return false
-			}
-			classes := strings.Split(attr.Val, " ")
-			for _, c := range classes {
-				if c == class {
-					return true
-				}
-			}
-		}
+	if len(args) == 1 {
+		return sign, horoskopy.DefaultPeriod, nil
 	}
 
-	return false
-}
-
-// https://stackoverflow.com/questions/26722450/remove-diacritics-using-go
-type mns struct{}
-
-func (a mns) Contains(r rune) bool {
-	return unicode.Is(unicode.Mn, r) // Mn: nonspacing marks
-}
-
-func sanitizeSign(sign string) string {
-	sign = strings.ToLower(sign)
-	var x mns
-	t := transform.Chain(norm.NFD, runes.Remove(x), norm.NFC)
-	sign, _, err := transform.String(t, sign)
+	period, err := horoskopy.ParsePeriod(args[1])
 	if err != nil {
-		log.Fatalf("Could not sanitize sign: %s", err)
+		return "", "", err
 	}
-	return sign
+
+	return sign, period, nil
 }
 
-func isSignValid(sign string) bool {
-	for _, s := range signs {
-		if s == sign {
-			return true
-		}
-	}
+// usage returns the help text listing the accepted signs and periods.
+func usage() string {
+	return fmt.Sprintf(`Usage: horoskopycli <sign> [period]
 
-	return false
+Signs:   %s
+Periods: %s (default: %s)
+
+Examples:
+  horoskopycli byk
+  horoskopycli ryby zitra
+  horoskopycli lev rok
+`,
+		strings.Join(horoskopy.SignSlugs(), ", "),
+		strings.Join(horoskopy.PeriodSlugs(), ", "),
+		horoskopy.DefaultPeriod,
+	)
 }
