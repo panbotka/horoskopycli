@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/kozaktomas/horoskopycli/internal/horoskopy"
+	"github.com/kozaktomas/horoskopycli/v2/internal/horoskopy"
 )
 
 // errTooManyArguments is returned when more than a sign and a period are given.

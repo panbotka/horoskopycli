@@ -9,7 +9,7 @@ Read your [horoskopy.cz](https://www.horoskopy.cz) horoscope without leaving the
 ### From source code:
 
 ```bash
-go install github.com/kozaktomas/horoskopycli@latest
+go install github.com/kozaktomas/horoskopycli/v2@latest
 ```
 
 ### From releases

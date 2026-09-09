@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kozaktomas/horoskopycli/internal/horoskopy"
+	"github.com/kozaktomas/horoskopycli/v2/internal/horoskopy"
 )
 
 // fakeFetcher stands in for the horoskopy.cz client so the CLI can be exercised

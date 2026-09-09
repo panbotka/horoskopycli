@@ -1,4 +1,4 @@
-module github.com/kozaktomas/horoskopycli
+module github.com/kozaktomas/horoskopycli/v2
 
 go 1.26
 
