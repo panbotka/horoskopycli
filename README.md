@@ -57,12 +57,41 @@ Malý pracovní přešlap vás zaskočí víc, než by měl. ...
 https://www.horoskopy.cz/clanek/horoskop-znameni-zverokruhu-ryby-zitra-558
 ```
 
+# Dream book (snář)
+
+horoskopy.cz can also interpret a dream with an AI model. Unlike the horoscopes, that part is
+not public: Seznam meters it per account, so the CLI has to be signed in.
+
+```bash
+horoskopycli login                       # opens a browser, sign in as usual
+horoskopycli snar "Zdálo se mi, že létám nad mořem."
+echo "Zdálo se mi o starém domě." | horoskopycli snar
+horoskopycli logout                      # ends the session, at Seznam too
+```
+
+`login` starts a Chrome-based browser on a throwaway profile, waits for you to sign in to
+Seznam, keeps the session cookie it is given and deletes the profile again. Your password never
+passes through the CLI. The session lasts about a year, so this is a once-a-year chore.
+
+Other ways to sign in:
+
+```bash
+horoskopycli login --paste               # for a browser this CLI cannot drive, e.g. Firefox
+horoskopycli login --browser /path/to/chrome
+export HOROSKOPYCLI_DS=<cookie>          # for scripts and CI
+```
+
+⚠️ **The stored cookie is your whole Seznam account**, not just horoscopes — the same session
+that opens your mailbox. It is written to `~/.config/horoskopycli/session.json` with mode
+`0600`; treat that file like a password, and run `horoskopycli logout` when you are done with a
+machine, which invalidates the session at Seznam rather than merely forgetting it here.
+
 ### Development
 
 Make changes and run `make` and make it pass.
 
 See [docs/architecture.md](docs/architecture.md) for how the tool talks to horoskopy.cz — worth reading before
-changing anything in `internal/horoskopy`.
+changing anything in `internal/horoskopy` or `internal/seznam`.
 
 ###### Run tests
 ```bash
