@@ -328,13 +328,14 @@ func parseLoginArgs(args []string) (loginArgs, error) {
 	browser := flags.String("browser", "", "browser executable to run the login in")
 	paste := flags.Bool("paste", false, "paste a cookie from another browser instead")
 	timeout := flags.Duration("timeout", seznam.DefaultLoginTimeout, "how long to wait for the login")
+	debug := flags.Bool("debug", false, "report what the browser is holding while waiting")
 
 	if err := flags.Parse(args); err != nil {
 		return loginArgs{}, fmt.Errorf("login: %w\n\n%s", err, usage())
 	}
 
 	return loginArgs{
-		opts:  seznam.LoginOptions{Browser: *browser, Timeout: *timeout},
+		opts:  seznam.LoginOptions{Browser: *browser, Timeout: *timeout, Debug: *debug},
 		paste: *paste,
 	}, nil
 }
@@ -377,7 +378,7 @@ func parseArgs(args []string) (horoskopy.Sign, horoskopy.Period, error) {
 func usage() string {
 	return fmt.Sprintf(`Usage: horoskopycli <sign> [period]
        horoskopycli snar [dream]
-       horoskopycli login [--paste] [--browser <path>]
+       horoskopycli login [--paste] [--browser <path>] [--debug]
        horoskopycli logout
 
 Signs:   %s

@@ -169,10 +169,25 @@ func (c *bidiConn) cookies() ([]cookie, error) {
 	return jar, nil
 }
 
-// openTab opens url in a new tab, which is how a stalled login is handed over
-// to horoskopy.cz.
+// openTab opens url in a new tab.
+//
+// BiDi splits this in two: a tab is created empty, and navigating it is a
+// separate command. browsingContext.create quietly ignores a url parameter
+// rather than refusing it, which opens a blank tab and waits forever.
 func (c *bidiConn) openTab(url string) error {
-	return c.call("browsingContext.create", map[string]any{"type": "tab", "url": url}, nil)
+	var created struct {
+		Context string `json:"context"`
+	}
+
+	if err := c.call("browsingContext.create", map[string]any{"type": "tab"}, &created); err != nil {
+		return err
+	}
+
+	return c.call("browsingContext.navigate", map[string]any{
+		"context": created.Context,
+		"url":     url,
+		"wait":    "none",
+	}, nil)
 }
 
 // closeBrowser asks Firefox to shut itself down.

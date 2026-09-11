@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,6 +60,13 @@ const portFilePollInterval = 100 * time.Millisecond
 // browserExitTimeout is how long a browser that has been asked to close is
 // given to do so before it is killed.
 const browserExitTimeout = 5 * time.Second
+
+// portProbeInterval and portProbeTimeout pace the check for whether the
+// browser is still listening on its remote control port.
+const (
+	portProbeInterval = 200 * time.Millisecond
+	portProbeTimeout  = time.Second
+)
 
 // profileRemovalDelay is how long to wait before another attempt at deleting
 // the throwaway profile, giving a browser's helpers time to finish writing.
@@ -160,14 +168,14 @@ func describeBrowser(path string) foundBrowser {
 // launchBrowser starts a browser on a fresh throwaway profile with remote
 // control enabled, and waits until it can be driven. The caller must call stop
 // to shut it down and delete the profile.
-func launchBrowser(ctx context.Context, found foundBrowser, url string, timeout time.Duration) (*browser, error) {
+func launchBrowser(ctx context.Context, found foundBrowser, timeout time.Duration) (*browser, error) {
 	profile, err := newProfile(found)
 	if err != nil {
 		return nil, err
 	}
 
 	//nolint:gosec // the executable is one the user chose or one of the known browsers.
-	cmd := exec.CommandContext(ctx, found.path, browserArgs(found.engine, profile, url)...)
+	cmd := exec.CommandContext(ctx, found.path, browserArgs(found.engine, profile)...)
 
 	// Firefox announces its endpoint on stderr; Chromium writes it into the
 	// profile, so only the former needs the pipe.
@@ -201,7 +209,12 @@ func launchBrowser(ctx context.Context, found foundBrowser, url string, timeout 
 
 // browserArgs builds the command line that puts a browser under remote control
 // on a profile of its own.
-func browserArgs(spoken engine, profile, url string) []string {
+//
+// No address is passed: the login page is opened afterwards, over the
+// protocol. A URL on the command line can be picked up by a browser that is
+// already running instead — and then the person signs in to a window this CLI
+// cannot see.
+func browserArgs(spoken engine, profile string) []string {
 	if spoken == engineFirefox {
 		// -no-remote implies a new instance, so an already running Firefox
 		// neither swallows this window nor is disturbed by it.
@@ -209,7 +222,6 @@ func browserArgs(spoken engine, profile, url string) []string {
 			"--profile", profile,
 			"--no-remote",
 			"--remote-debugging-port=0",
-			url,
 		}
 	}
 
@@ -219,7 +231,6 @@ func browserArgs(spoken engine, profile, url string) []string {
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--window-size=520,780",
-		url,
 	}
 }
 
@@ -357,8 +368,47 @@ func (b *browser) connect() (cookieSource, error) {
 // login session with it: the cookie the CLI kept is the only thing that
 // survives.
 func (b *browser) stop() {
+	b.waitForPort(browserExitTimeout)
 	b.waitOrKill(browserExitTimeout)
 	b.removeProfile()
+}
+
+// waitForPort waits until the browser stops answering on its remote control
+// port, which is when it has really gone.
+//
+// The process this CLI started is not always the browser: a snap wrapper or a
+// launcher script exits immediately and leaves the real browser running behind
+// it, still writing to the profile that is about to be deleted.
+func (b *browser) waitForPort(timeout time.Duration) {
+	address, ok := endpointAddress(b.endpoint)
+	if !ok {
+		return
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", address, portProbeTimeout)
+		if err != nil {
+			return // nothing is listening any more
+		}
+		_ = conn.Close()
+
+		time.Sleep(portProbeInterval)
+	}
+}
+
+// endpointAddress takes the host and port out of a ws:// endpoint.
+func endpointAddress(endpoint string) (string, bool) {
+	rest, found := strings.CutPrefix(endpoint, "ws://")
+	if !found {
+		return "", false
+	}
+
+	if slash := strings.Index(rest, "/"); slash >= 0 {
+		rest = rest[:slash]
+	}
+
+	return rest, rest != ""
 }
 
 // waitOrKill gives a browser that has been asked to close time to leave on its

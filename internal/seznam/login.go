@@ -32,6 +32,10 @@ const browserStartTimeout = 30 * time.Second
 // waiting for the user.
 const cookiePollInterval = time.Second
 
+// stuckHint is how long to wait with nothing happening before suggesting that
+// the browser window may not have appeared at all.
+const stuckHint = 45 * time.Second
+
 // ErrLoginTimeout is returned when the login was not completed in time.
 var ErrLoginTimeout = errors.New("timed out waiting for the login to finish")
 
@@ -57,6 +61,34 @@ type LoginOptions struct {
 	// Progress receives a line of reassurance while the browser is open. It
 	// may be nil.
 	Progress io.Writer
+	// Debug asks for a line per poll saying what the browser is holding, for
+	// working out why a login never completes.
+	Debug bool
+}
+
+// progress reports what the login is doing, and says nothing when the caller
+// asked for no output.
+type progress struct {
+	out   io.Writer
+	debug bool
+}
+
+// printf writes a line for the person waiting.
+func (p progress) printf(format string, args ...any) {
+	if p.out == nil {
+		return
+	}
+
+	fmt.Fprintf(p.out, format, args...)
+}
+
+// debugf writes a line only when debugging was asked for.
+func (p progress) debugf(format string, args ...any) {
+	if !p.debug {
+		return
+	}
+
+	p.printf(format, args...)
 }
 
 // Login opens a browser on the Seznam login screen, waits for the user to sign
@@ -77,7 +109,7 @@ func Login(ctx context.Context, opts LoginOptions) (Session, error) {
 		timeout = DefaultLoginTimeout
 	}
 
-	started, err := launchBrowser(ctx, found, loginURL, browserStartTimeout)
+	started, err := launchBrowser(ctx, found, browserStartTimeout)
 	if err != nil {
 		return Session{}, err
 	}
@@ -95,23 +127,45 @@ func Login(ctx context.Context, opts LoginOptions) (Session, error) {
 		_ = conn.close()
 	}()
 
-	if opts.Progress != nil {
-		fmt.Fprintf(opts.Progress, "Waiting for the Seznam login in %s…\n", found.path)
+	report := progress{out: opts.Progress, debug: opts.Debug}
+	report.debugf("Browser: %s, driven at %s\n", found.path, started.endpoint)
+
+	// The login page is opened here rather than passed on the command line,
+	// so that it cannot land in a browser window this CLI cannot read.
+	if err := conn.openTab(loginURL); err != nil {
+		return Session{}, fmt.Errorf("could not open the login page: %w", err)
 	}
 
-	return waitForSession(ctx, conn, timeout, cookiePollInterval)
+	report.printf("Waiting for the Seznam login in %s…\n", found.path)
+
+	return waitForSession(ctx, conn, timeout, cookiePollInterval, report)
 }
 
 // waitForSession polls the browser cookie jar every interval until the
 // horoskopy.cz session cookie appears, nudging a stalled login along the way.
-func waitForSession(ctx context.Context, conn cookieSource, timeout, interval time.Duration) (Session, error) {
+func waitForSession(
+	ctx context.Context,
+	conn cookieSource,
+	timeout, interval time.Duration,
+	report progress,
+) (Session, error) {
 	deadline := time.Now().Add(timeout)
+	started := time.Now()
 	nudged := false
+	hinted := false
 
 	for time.Now().Before(deadline) {
 		jar, err := conn.cookies()
 		if err != nil {
 			return Session{}, err
+		}
+
+		report.debugf("  %s\n", describeJar(jar))
+
+		if !hinted && !signedIn(jar) && time.Since(started) > stuckHint {
+			report.printf("Still waiting. If no browser window opened, press Ctrl-C and try " +
+				"`horoskopycli login --paste`, or `--browser <path>` to pick another browser.\n")
+			hinted = true
 		}
 
 		if found, ok := sessionCookie(jar); ok {
@@ -121,6 +175,8 @@ func waitForSession(ctx context.Context, conn cookieSource, timeout, interval ti
 		// Signed in to Seznam, but not carried over to horoskopy.cz yet:
 		// opening the site once is what hands the session over.
 		if !nudged && signedIn(jar) {
+			report.debugf("  signed in to Seznam, opening %s to hand the session over\n", handoffURL)
+
 			if err := conn.openTab(handoffURL); err != nil {
 				return Session{}, err
 			}
@@ -133,6 +189,23 @@ func waitForSession(ctx context.Context, conn cookieSource, timeout, interval ti
 	}
 
 	return Session{}, fmt.Errorf("%w after %s", ErrLoginTimeout, timeout)
+}
+
+// describeJar summarises a cookie jar for the debug output: the only thing
+// worth watching is where the session cookie has appeared so far.
+func describeJar(jar []cookie) string {
+	domains := make([]string, 0, 2)
+	for _, candidate := range jar {
+		if candidate.Name == CookieName {
+			domains = append(domains, candidate.Domain)
+		}
+	}
+
+	if len(domains) == 0 {
+		return fmt.Sprintf("%d cookies, no Seznam session yet", len(jar))
+	}
+
+	return fmt.Sprintf("%d cookies, Seznam session on %s", len(jar), strings.Join(domains, ", "))
 }
 
 // sessionCookie picks the horoskopy.cz session cookie out of a cookie jar.

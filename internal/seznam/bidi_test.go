@@ -127,7 +127,7 @@ func TestBiDiConnCookiesUnwrapsValues(t *testing.T) {
 	}
 }
 
-func TestBiDiConnOpenTabCreatesATab(t *testing.T) {
+func TestBiDiConnOpenTabCreatesAndNavigates(t *testing.T) {
 	t.Parallel()
 
 	conn, requests := newFakeFirefox(t, func(request map[string]any) string {
@@ -138,17 +138,27 @@ func TestBiDiConnOpenTabCreatesATab(t *testing.T) {
 		t.Fatalf("openTab returned %v", err)
 	}
 
-	request := <-requests
-	if request["method"] != "browsingContext.create" {
-		t.Fatalf("openTab called %v, want browsingContext.create", request["method"])
+	created := <-requests
+	if created["method"] != "browsingContext.create" {
+		t.Fatalf("openTab called %v first, want browsingContext.create", created["method"])
 	}
 
-	params, ok := request["params"].(map[string]any)
-	if !ok {
-		t.Fatal("openTab sent no params")
+	// Creating a tab takes no address — BiDi ignores one rather than refusing
+	// it, which would leave the tab blank and the login waiting forever.
+	navigated := <-requests
+	if navigated["method"] != "browsingContext.navigate" {
+		t.Fatalf("openTab called %v second, want browsingContext.navigate", navigated["method"])
 	}
-	if params["url"] != "https://www.horoskopy.cz/" || params["type"] != "tab" {
-		t.Errorf("openTab params = %v, want a tab on the horoskopy.cz URL", params)
+
+	params, ok := navigated["params"].(map[string]any)
+	if !ok {
+		t.Fatal("navigate sent no params")
+	}
+	if params["url"] != "https://www.horoskopy.cz/" {
+		t.Errorf("navigate asked for %v, want the horoskopy.cz URL", params["url"])
+	}
+	if params["context"] != "abc" {
+		t.Errorf("navigate used context %v, want the tab that was just created", params["context"])
 	}
 }
 

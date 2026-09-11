@@ -1,9 +1,11 @@
 package seznam
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -127,7 +129,7 @@ func TestWaitForSessionReturnsTheCookie(t *testing.T) {
 	)
 	conn, _ := newFakeBrowser(t, reply)
 
-	session, err := waitForSession(context.Background(), conn, 5*time.Second, time.Millisecond)
+	session, err := waitForSession(context.Background(), conn, 5*time.Second, time.Millisecond, progress{})
 	if err != nil {
 		t.Fatalf("waitForSession returned %v", err)
 	}
@@ -156,7 +158,7 @@ func TestWaitForSessionHandsTheLoginOverOnce(t *testing.T) {
 	)
 	conn, _ := newFakeBrowser(t, reply)
 
-	session, err := waitForSession(context.Background(), conn, 5*time.Second, time.Millisecond)
+	session, err := waitForSession(context.Background(), conn, 5*time.Second, time.Millisecond, progress{})
 	if err != nil {
 		t.Fatalf("waitForSession returned %v", err)
 	}
@@ -174,7 +176,7 @@ func TestWaitForSessionGivesUp(t *testing.T) {
 	reply, _, _ := cookieReplies(`[]`)
 	conn, _ := newFakeBrowser(t, reply)
 
-	_, err := waitForSession(context.Background(), conn, 20*time.Millisecond, time.Millisecond)
+	_, err := waitForSession(context.Background(), conn, 20*time.Millisecond, time.Millisecond, progress{})
 	if !errors.Is(err, ErrLoginTimeout) {
 		t.Errorf("waitForSession = %v, want ErrLoginTimeout", err)
 	}
@@ -189,7 +191,7 @@ func TestWaitForSessionStopsWhenCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := waitForSession(ctx, conn, time.Minute, time.Millisecond)
+	_, err := waitForSession(ctx, conn, time.Minute, time.Millisecond, progress{})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("waitForSession after cancel = %v, want context.Canceled", err)
 	}
@@ -224,5 +226,78 @@ func TestLoginNeedsABrowser(t *testing.T) {
 	_, err := Login(context.Background(), LoginOptions{Browser: "definitely-not-a-browser"})
 	if err == nil {
 		t.Error("Login without a usable browser should fail")
+	}
+}
+
+func TestDescribeJar(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		jar  []cookie
+		want string
+	}{
+		"nothing yet": {
+			jar:  []cookie{{Name: "sid", Domain: ".seznam.cz"}},
+			want: "1 cookies, no Seznam session yet",
+		},
+		"signed in to seznam only": {
+			jar:  []cookie{{Name: CookieName, Domain: ".seznam.cz"}},
+			want: "1 cookies, Seznam session on .seznam.cz",
+		},
+		"handed over": {
+			jar: []cookie{
+				{Name: CookieName, Domain: ".seznam.cz"},
+				{Name: CookieName, Domain: ".horoskopy.cz"},
+			},
+			want: "2 cookies, Seznam session on .seznam.cz, .horoskopy.cz",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := describeJar(tt.jar); got != tt.want {
+				t.Errorf("describeJar() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWaitForSessionReportsWhatItSees(t *testing.T) {
+	t.Parallel()
+
+	reply, _, _ := cookieReplies(
+		`[{"name":"ds","value":"seznam-only","domain":".seznam.cz"}]`,
+		`[{"name":"ds","value":"cookie-value","domain":".horoskopy.cz"}]`,
+	)
+	conn, _ := newFakeBrowser(t, reply)
+
+	var out bytes.Buffer
+	if _, err := waitForSession(context.Background(), conn, 5*time.Second, time.Millisecond,
+		progress{out: &out, debug: true}); err != nil {
+		t.Fatalf("waitForSession returned %v", err)
+	}
+
+	printed := out.String()
+	for _, want := range []string{"Seznam session on .seznam.cz", "hand the session over"} {
+		if !strings.Contains(printed, want) {
+			t.Errorf("debug output %q should mention %q", printed, want)
+		}
+	}
+}
+
+func TestProgressStaysQuietWithoutAWriter(t *testing.T) {
+	t.Parallel()
+
+	// Neither call may panic: Progress is optional, and debug output is only
+	// wanted when asked for.
+	progress{}.printf("ignored %d\n", 1)
+	progress{debug: true}.printf("ignored\n")
+
+	var out bytes.Buffer
+	progress{out: &out}.debugf("not debugging\n")
+	if out.Len() != 0 {
+		t.Errorf("debugf wrote %q without being asked to debug", out.String())
 	}
 }

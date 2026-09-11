@@ -3,6 +3,7 @@ package seznam
 import (
 	"errors"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -119,8 +120,8 @@ func TestFindBrowserRejectsAnUnusableRequest(t *testing.T) {
 func TestBrowserArgs(t *testing.T) {
 	t.Parallel()
 
-	firefox := strings.Join(browserArgs(engineFirefox, "/profile", "https://example.com/"), " ")
-	for _, want := range []string{"--profile /profile", "--no-remote", "--remote-debugging-port=0", "https://example.com/"} {
+	firefox := strings.Join(browserArgs(engineFirefox, "/profile"), " ")
+	for _, want := range []string{"--profile /profile", "--no-remote", "--remote-debugging-port=0"} {
 		if !strings.Contains(firefox, want) {
 			t.Errorf("Firefox args %q should contain %q", firefox, want)
 		}
@@ -129,14 +130,22 @@ func TestBrowserArgs(t *testing.T) {
 		t.Error("Firefox does not understand --user-data-dir")
 	}
 
-	chromium := strings.Join(browserArgs(engineChromium, "/profile", "https://example.com/"), " ")
-	for _, want := range []string{"--user-data-dir=/profile", "--remote-debugging-port=0", "https://example.com/"} {
+	chromium := strings.Join(browserArgs(engineChromium, "/profile"), " ")
+	for _, want := range []string{"--user-data-dir=/profile", "--remote-debugging-port=0"} {
 		if !strings.Contains(chromium, want) {
 			t.Errorf("Chromium args %q should contain %q", chromium, want)
 		}
 	}
 	if strings.Contains(chromium, "--profile ") {
 		t.Error("Chromium does not understand --profile")
+	}
+
+	// The address is opened over the protocol instead, so that a browser which
+	// is already running cannot pick it up.
+	for _, args := range []string{firefox, chromium} {
+		if strings.Contains(args, "http") {
+			t.Errorf("args %q should carry no address", args)
+		}
 	}
 }
 
@@ -341,5 +350,73 @@ func TestBrowserStopIsSafeWithoutAProcess(t *testing.T) {
 
 	if _, err := os.Stat(profile); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("stop should remove the throwaway profile, stat returned %v", err)
+	}
+}
+
+func TestEndpointAddress(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		endpoint string
+		want     string
+		wantOK   bool
+	}{
+		"chromium endpoint": {
+			endpoint: "ws://127.0.0.1:45037/devtools/browser/c9fa5370",
+			want:     "127.0.0.1:45037",
+			wantOK:   true,
+		},
+		"firefox endpoint": {endpoint: "ws://127.0.0.1:43227", want: "127.0.0.1:43227", wantOK: true},
+		"with a session path": {
+			endpoint: "ws://127.0.0.1:43227/session",
+			want:     "127.0.0.1:43227",
+			wantOK:   true,
+		},
+		"not a websocket": {endpoint: "http://127.0.0.1:43227"},
+		"empty":           {endpoint: ""},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := endpointAddress(tt.endpoint)
+			if ok != tt.wantOK {
+				t.Fatalf("endpointAddress(%q) ok = %v, want %v", tt.endpoint, ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Errorf("endpointAddress(%q) = %q, want %q", tt.endpoint, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBrowserWaitForPortReturnsWhenNothingListens(t *testing.T) {
+	t.Parallel()
+
+	started := time.Now()
+	(&browser{endpoint: "ws://127.0.0.1:0/devtools"}).waitForPort(5 * time.Second)
+
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Errorf("waitForPort took %s against a dead port, want it to return at once", elapsed)
+	}
+}
+
+func TestBrowserWaitForPortGivesUpOnALiveBrowser(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("could not listen: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+	})
+
+	started := time.Now()
+	(&browser{endpoint: "ws://" + listener.Addr().String() + "/devtools"}).waitForPort(300 * time.Millisecond)
+
+	if elapsed := time.Since(started); elapsed < 300*time.Millisecond {
+		t.Errorf("waitForPort returned after %s, want it to wait out its timeout", elapsed)
 	}
 }

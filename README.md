@@ -83,6 +83,7 @@ Other ways to sign in:
 ```bash
 horoskopycli login --browser /path/to/browser   # pick one explicitly
 horoskopycli login --paste                      # no supported browser: paste the cookie
+horoskopycli login --debug                      # say what the browser is holding, when it sticks
 export HOROSKOPYCLI_DS=<cookie>                 # for scripts and CI
 ```
 

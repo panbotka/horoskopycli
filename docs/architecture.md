@@ -106,8 +106,12 @@ horoskopycli login
 
 The browser is asked to close itself and then given time to go, rather than being killed
 outright. A killed browser leaves helper processes behind that write the profile directory back
-out after it has been deleted — with the login cookie in it. That was observed with Chrome, and
-`stop` now waits for the process to exit and retries the removal.
+out after it has been deleted — with the login cookie in it. That was observed with Chrome.
+
+Teardown therefore waits for the browser's remote control port to stop answering before
+deleting the profile, not for the process it started: with a snap or a launcher script, the
+process this CLI spawned exits at once while the real browser runs on. That was observed with
+Firefox. A kill and a couple of retries follow, in case the port outlives everything.
 
 ### Two protocols, one loop
 
@@ -120,7 +124,7 @@ same id out — that only the vocabulary differs:
 | endpoint | `<profile>/DevToolsActivePort` | announced on stderr, plus `/session` |
 | session | none needed | `session.new` first |
 | read cookies | `Storage.getCookies` | `storage.getCookies` |
-| open a tab | `Target.createTarget` | `browsingContext.create` |
+| open a page | `Target.createTarget` | `browsingContext.create`, then `browsingContext.navigate` |
 | shut down | `Browser.close` | `browser.close` |
 | cookie value | a plain string | `{type: "string", value: …}` |
 | expiry field | `expires` | `expiry` |
@@ -128,12 +132,28 @@ same id out — that only the vocabulary differs:
 Both satisfy `cookieSource`, so `waitForSession` — the loop that actually waits for the human —
 is written once and knows nothing about either protocol.
 
-One trap worth recording: BiDi's `storage.getCookies` domain filter matches **exactly**, so
-asking it for `horoskopy.cz` returns nothing at all, because the cookie is stored under
-`.horoskopy.cz`. The whole jar is read and filtered in Go instead, which is what the Chromium
-path does anyway.
+Two traps worth recording, both of which fail quietly rather than loudly:
+
+- BiDi's `storage.getCookies` domain filter matches **exactly**, so asking it for
+  `horoskopy.cz` returns nothing at all, because the cookie is stored under `.horoskopy.cz`.
+  The whole jar is read and filtered in Go instead, which is what the Chromium path does anyway.
+- `browsingContext.create` takes **no address**. Passing one is not an error; it is ignored, and
+  the result is a blank tab and a login that waits for a page nobody opened. Navigating is a
+  second command.
+
+The login page is opened this way, over the protocol, rather than passed on the command line.
+A browser that is already running can take a command-line URL for itself, and then the person
+signs in to a window this CLI cannot read — which looks exactly like a hang.
+
+Commands are bounded by a deadline on the socket. Without one, a browser that stops answering
+hangs the CLI for good: the login loop only checks its own deadline between commands, never
+during one.
 
 ### Finding the browser a person actually uses
+
+`horoskopycli login --debug` prints what the browser is holding on each poll — how many cookies
+and which domains carry a Seznam session — which is the quickest way to tell "no window opened"
+apart from "signed in somewhere this CLI cannot see".
 
 `login` opens the browser the user would expect, not whichever one happens to be first in PATH:
 

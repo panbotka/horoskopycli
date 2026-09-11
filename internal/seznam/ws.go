@@ -23,6 +23,11 @@ import (
 // thing the CLI reads and stay far below this.
 const wsMaxMessage = 8 << 20
 
+// wsCommandTimeout bounds a single exchange with the browser. Without it a
+// browser that never answers would hang the CLI for good: the login loop only
+// checks its own deadline between commands, never during one.
+const wsCommandTimeout = 30 * time.Second
+
 // Frame header bits and opcodes used below.
 const (
 	wsFinalFrame  = 0x80
@@ -141,8 +146,12 @@ func drainHeaders(reader *bufio.Reader) error {
 }
 
 // writeText sends payload as a single masked text frame, as RFC 6455 requires
-// of clients.
+// of clients. The write is bounded by wsCommandTimeout.
 func (w *wsConn) writeText(payload []byte) error {
+	if err := w.conn.SetWriteDeadline(time.Now().Add(wsCommandTimeout)); err != nil {
+		return fmt.Errorf("could not set a write deadline: %w", err)
+	}
+
 	mask := make([]byte, 4)
 	if _, err := rand.Read(mask); err != nil {
 		return fmt.Errorf("could not generate websocket mask: %w", err)
@@ -183,8 +192,13 @@ func wsHeader(length int) []byte {
 
 // readText returns the next complete text message, joining continuation frames
 // and skipping ping and pong control frames. It returns io.EOF when the peer
-// closes the connection.
+// closes the connection, and gives up after wsCommandTimeout so that a browser
+// which stops answering surfaces as an error rather than as a hang.
 func (w *wsConn) readText() ([]byte, error) {
+	if err := w.conn.SetReadDeadline(time.Now().Add(wsCommandTimeout)); err != nil {
+		return nil, fmt.Errorf("could not set a read deadline: %w", err)
+	}
+
 	var message []byte
 
 	for {
