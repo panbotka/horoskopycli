@@ -2,11 +2,14 @@ package seznam
 
 import (
 	"errors"
-	"io"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -120,8 +123,8 @@ func TestFindBrowserRejectsAnUnusableRequest(t *testing.T) {
 func TestBrowserArgs(t *testing.T) {
 	t.Parallel()
 
-	firefox := strings.Join(browserArgs(engineFirefox, "/profile"), " ")
-	for _, want := range []string{"--profile /profile", "--no-remote", "--remote-debugging-port=0"} {
+	firefox := strings.Join(browserArgs(engineFirefox, "/profile", 45999), " ")
+	for _, want := range []string{"--profile /profile", "--no-remote", "--remote-debugging-port=45999"} {
 		if !strings.Contains(firefox, want) {
 			t.Errorf("Firefox args %q should contain %q", firefox, want)
 		}
@@ -130,8 +133,8 @@ func TestBrowserArgs(t *testing.T) {
 		t.Error("Firefox does not understand --user-data-dir")
 	}
 
-	chromium := strings.Join(browserArgs(engineChromium, "/profile"), " ")
-	for _, want := range []string{"--user-data-dir=/profile", "--remote-debugging-port=0"} {
+	chromium := strings.Join(browserArgs(engineChromium, "/profile", 45999), " ")
+	for _, want := range []string{"--user-data-dir=/profile", "--remote-debugging-port=45999"} {
 		if !strings.Contains(chromium, want) {
 			t.Errorf("Chromium args %q should contain %q", chromium, want)
 		}
@@ -198,112 +201,129 @@ func TestNewProfileUsesTheSnapDirectory(t *testing.T) {
 	}
 }
 
-func TestWaitForAnnouncementFindsTheEndpoint(t *testing.T) {
+func TestFreePortReturnsSomethingUsable(t *testing.T) {
 	t.Parallel()
 
-	output := strings.NewReader(
-		"*** You are running in headless mode.\n" +
-			"WebDriver BiDi listening on ws://127.0.0.1:43227\n" +
-			"console.warn: something else entirely\n")
-
-	got, err := waitForAnnouncement(output, 2*time.Second)
+	port, err := freePort()
 	if err != nil {
-		t.Fatalf("waitForAnnouncement returned %v", err)
+		t.Fatalf("freePort returned %v", err)
 	}
-	if got != "ws://127.0.0.1:43227" {
-		t.Errorf("waitForAnnouncement = %q, want the announced address", got)
+	if port <= 0 || port > 65535 {
+		t.Fatalf("freePort() = %d, want a usable port", port)
+	}
+
+	// The port has to be free again by the time it is returned, or the browser
+	// could not bind it.
+	listener, err := net.Listen("tcp", localAddress(port))
+	if err != nil {
+		t.Fatalf("the port freePort chose is still taken: %v", err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Errorf("could not close the test listener: %v", err)
 	}
 }
 
-func TestWaitForAnnouncementGivesUp(t *testing.T) {
+func TestProbeEndpointFindsFirefoxByItsPort(t *testing.T) {
 	t.Parallel()
 
-	// A browser that says nothing useful: the reader stays open, as a live
-	// process's output would.
-	reader, writer := io.Pipe()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("could not listen: %v", err)
+	}
 	t.Cleanup(func() {
-		_ = writer.Close()
+		_ = listener.Close()
 	})
 
-	_, err := waitForAnnouncement(reader, 100*time.Millisecond)
-	if !errors.Is(err, ErrNoDebugPort) {
-		t.Errorf("waitForAnnouncement = %v, want ErrNoDebugPort", err)
+	address, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatal("listener has no TCP address")
+	}
+
+	endpoint, found := probeEndpoint(engineFirefox, address.Port)
+	if !found {
+		t.Fatal("probeEndpoint should find a listening Firefox")
+	}
+	if !strings.HasSuffix(endpoint, "/session") {
+		t.Errorf("probeEndpoint() = %q, want the BiDi session path", endpoint)
 	}
 }
 
-func TestReadEndpoint(t *testing.T) {
+func TestProbeEndpointAsksChromiumWhereItIs(t *testing.T) {
 	t.Parallel()
 
-	tests := map[string]struct {
-		contents string
-		want     string
-		wantOK   bool
-	}{
-		"port and path": {
-			contents: "45037\n/devtools/browser/c9fa5370\n",
-			want:     "ws://127.0.0.1:45037/devtools/browser/c9fa5370",
-			wantOK:   true,
-		},
-		"still being written": {contents: "45037\n"},
-		"empty file":          {contents: ""},
-		"blank path":          {contents: "45037\n\n"},
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/json/version" {
+			t.Errorf("browser was asked for %q, want /json/version", r.URL.Path)
+		}
+
+		if _, err := w.Write([]byte(`{"webSocketDebuggerUrl":"ws://127.0.0.1:1/devtools/browser/abc"}`)); err != nil {
+			t.Errorf("could not answer: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	port, err := strconv.Atoi(strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
+	if err != nil {
+		t.Fatalf("could not read the test server port: %v", err)
 	}
 
-	for name, tt := range tests {
+	endpoint, found := probeEndpoint(engineChromium, port)
+	if !found {
+		t.Fatal("probeEndpoint should read the browser's own description")
+	}
+	if endpoint != "ws://127.0.0.1:1/devtools/browser/abc" {
+		t.Errorf("probeEndpoint() = %q, want the address the browser named", endpoint)
+	}
+}
+
+func TestProbeEndpointReportsNothingOnADeadPort(t *testing.T) {
+	t.Parallel()
+
+	for name, spoken := range map[string]engine{"firefox": engineFirefox, "chromium": engineChromium} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			path := filepath.Join(t.TempDir(), "DevToolsActivePort")
-			if err := os.WriteFile(path, []byte(tt.contents), 0o600); err != nil {
-				t.Fatalf("could not write the port file: %v", err)
-			}
-
-			got, ok := readEndpoint(path)
-			if ok != tt.wantOK {
-				t.Fatalf("readEndpoint(%q) ok = %v, want %v", tt.contents, ok, tt.wantOK)
-			}
-			if got != tt.want {
-				t.Errorf("readEndpoint(%q) = %q, want %q", tt.contents, got, tt.want)
+			if _, found := probeEndpoint(spoken, 1); found {
+				t.Error("probeEndpoint should find nothing on a port without a browser")
 			}
 		})
-	}
-}
-
-func TestReadEndpointOnAMissingFile(t *testing.T) {
-	t.Parallel()
-
-	if _, ok := readEndpoint(filepath.Join(t.TempDir(), "DevToolsActivePort")); ok {
-		t.Error("readEndpoint should report a missing file as not ready")
 	}
 }
 
 func TestWaitForEndpointGivesUp(t *testing.T) {
 	t.Parallel()
 
-	_, err := waitForEndpoint(t.TempDir(), 150*time.Millisecond)
+	_, err := waitForEndpoint(engineFirefox, 1, 200*time.Millisecond)
 	if !errors.Is(err, ErrNoDebugPort) {
-		t.Errorf("waitForEndpoint on an empty profile = %v, want ErrNoDebugPort", err)
+		t.Errorf("waitForEndpoint with no browser = %v, want ErrNoDebugPort", err)
 	}
 }
 
-func TestWaitForEndpointFindsALateFile(t *testing.T) {
+func TestWaitForEndpointFindsALateBrowser(t *testing.T) {
 	t.Parallel()
 
-	profile := t.TempDir()
+	port, err := freePort()
+	if err != nil {
+		t.Fatalf("freePort returned %v", err)
+	}
+
 	go func() {
 		time.Sleep(150 * time.Millisecond)
-		path := filepath.Join(profile, "DevToolsActivePort")
-		if err := os.WriteFile(path, []byte("9222\n/devtools/browser/late\n"), 0o600); err != nil {
-			t.Errorf("could not write the port file: %v", err)
+
+		listener, err := net.Listen("tcp", localAddress(port))
+		if err != nil {
+			return // the port was taken in the meantime; the test still passes or times out
 		}
+		time.Sleep(2 * time.Second)
+		_ = listener.Close()
 	}()
 
-	got, err := waitForEndpoint(profile, 5*time.Second)
+	endpoint, err := waitForEndpoint(engineFirefox, port, 5*time.Second)
 	if err != nil {
 		t.Fatalf("waitForEndpoint returned %v", err)
 	}
-	if got != "ws://127.0.0.1:9222/devtools/browser/late" {
-		t.Errorf("waitForEndpoint = %q", got)
+	if endpoint != fmt.Sprintf("ws://127.0.0.1:%d/session", port) {
+		t.Errorf("waitForEndpoint() = %q", endpoint)
 	}
 }
 

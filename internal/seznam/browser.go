@@ -1,16 +1,15 @@
 package seznam
 
 import (
-	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -53,10 +52,6 @@ var browserCandidates = []string{
 	"microsoft-edge",
 }
 
-// portFilePollInterval is how often the profile directory is checked for the
-// file a Chromium-based browser writes once its debugging port is open.
-const portFilePollInterval = 100 * time.Millisecond
-
 // browserExitTimeout is how long a browser that has been asked to close is
 // given to do so before it is killed.
 const browserExitTimeout = 5 * time.Second
@@ -76,12 +71,6 @@ const profileRemovalDelay = 500 * time.Millisecond
 // before giving up and leaving it to the operating system's temporary
 // directory cleanup.
 const profileRemovalAttempts = 3
-
-// bidiAnnouncement is how Firefox says where its remote agent is listening.
-const bidiAnnouncement = "WebDriver BiDi listening"
-
-// webSocketURL picks the endpoint out of that announcement.
-var webSocketURL = regexp.MustCompile(`ws://\S+`)
 
 // ErrNoBrowser is returned when no supported browser can be found to run the
 // login in.
@@ -174,37 +163,75 @@ func launchBrowser(ctx context.Context, found foundBrowser, timeout time.Duratio
 		return nil, err
 	}
 
-	//nolint:gosec // the executable is one the user chose or one of the known browsers.
-	cmd := exec.CommandContext(ctx, found.path, browserArgs(found.engine, profile)...)
-
-	// Firefox announces its endpoint on stderr; Chromium writes it into the
-	// profile, so only the former needs the pipe.
-	var announcements io.Reader
-	if found.engine == engineFirefox {
-		announcements, err = cmd.StderrPipe()
-		if err != nil {
-			_ = os.RemoveAll(profile)
-
-			return nil, fmt.Errorf("could not watch %s: %w", found.path, err)
-		}
-	}
-
-	if err := cmd.Start(); err != nil {
-		_ = os.RemoveAll(profile)
-
-		return nil, fmt.Errorf("could not start %s: %w", found.path, err)
-	}
-
-	started := &browser{cmd: cmd, profile: profile, engine: found.engine}
-
-	started.endpoint, err = findEndpoint(found.engine, profile, announcements, timeout)
+	port, err := freePort()
 	if err != nil {
-		started.stop()
+		_ = os.RemoveAll(profile)
 
 		return nil, err
 	}
 
+	attempts := launchAttempts(ctx, found, profile, port)
+	perAttempt := timeout / time.Duration(len(attempts))
+
+	var lastErr error
+
+	for _, cmd := range attempts {
+		started, err := tryLaunch(cmd, found.engine, profile, port, perAttempt)
+		if err == nil {
+			return started, nil
+		}
+
+		lastErr = err
+	}
+
+	_ = os.RemoveAll(profile)
+
+	return nil, lastErr
+}
+
+// tryLaunch starts one candidate command and waits for the browser to answer
+// on its port, cleaning the process up again if it never does.
+func tryLaunch(cmd *exec.Cmd, spoken engine, profile string, port int, timeout time.Duration) (*browser, error) {
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("could not start %s: %w", cmd.Path, err)
+	}
+
+	started := &browser{cmd: cmd, profile: profile, engine: spoken}
+
+	endpoint, err := waitForEndpoint(spoken, port, timeout)
+	if err != nil {
+		started.waitOrKill(0)
+
+		return nil, err
+	}
+	started.endpoint = endpoint
+
 	return started, nil
+}
+
+// freePort asks the operating system for a port the browser can listen on.
+//
+// The port is released again before the browser claims it, which leaves a
+// small window for something else to take it. That is why a browser failing to
+// appear on the port is reported rather than waited on forever.
+func freePort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("could not find a free port: %w", err)
+	}
+
+	address, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = listener.Close()
+
+		return 0, fmt.Errorf("could not find a free port: %w", ErrNoDebugPort)
+	}
+
+	if err := listener.Close(); err != nil {
+		return 0, fmt.Errorf("could not release the chosen port: %w", err)
+	}
+
+	return address.Port, nil
 }
 
 // browserArgs builds the command line that puts a browser under remote control
@@ -214,20 +241,22 @@ func launchBrowser(ctx context.Context, found foundBrowser, timeout time.Duratio
 // protocol. A URL on the command line can be picked up by a browser that is
 // already running instead — and then the person signs in to a window this CLI
 // cannot see.
-func browserArgs(spoken engine, profile string) []string {
+func browserArgs(spoken engine, profile string, port int) []string {
+	remoteControl := fmt.Sprintf("--remote-debugging-port=%d", port)
+
 	if spoken == engineFirefox {
 		// -no-remote implies a new instance, so an already running Firefox
 		// neither swallows this window nor is disturbed by it.
 		return []string{
 			"--profile", profile,
 			"--no-remote",
-			"--remote-debugging-port=0",
+			remoteControl,
 		}
 	}
 
 	return []string{
 		"--user-data-dir=" + profile,
-		"--remote-debugging-port=0",
+		remoteControl,
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--window-size=520,780",
@@ -277,81 +306,67 @@ func snapProfileDir(path string) (string, bool) {
 	return "", false
 }
 
-// findEndpoint waits for the browser to say where it can be driven: Firefox
-// announces it on stderr, Chromium writes it into the profile directory.
-func findEndpoint(spoken engine, profile string, announcements io.Reader, timeout time.Duration) (string, error) {
-	if spoken == engineFirefox {
-		return waitForAnnouncement(announcements, timeout)
-	}
-
-	return waitForEndpoint(profile, timeout)
-}
-
-// waitForAnnouncement watches a Firefox process's output for the line naming
-// its remote agent. It keeps reading afterwards so that the browser never
-// blocks on a full pipe.
-func waitForAnnouncement(announcements io.Reader, timeout time.Duration) (string, error) {
-	announced := make(chan string, 1)
-
-	go func() {
-		scanner := bufio.NewScanner(announcements)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.Contains(line, bidiAnnouncement) {
-				continue
-			}
-
-			select {
-			case announced <- webSocketURL.FindString(line):
-			default:
-			}
-		}
-	}()
-
-	select {
-	case endpoint := <-announced:
-		if endpoint == "" {
-			return "", fmt.Errorf("%w: could not read the announced address", ErrNoDebugPort)
-		}
-
-		return endpoint, nil
-	case <-time.After(timeout):
-		return "", fmt.Errorf("%w within %s", ErrNoDebugPort, timeout)
-	}
-}
-
-// waitForEndpoint waits for a Chromium-based browser to write its
-// DevToolsActivePort file and turns it into a WebSocket URL.
-func waitForEndpoint(profile string, timeout time.Duration) (string, error) {
-	path := filepath.Join(profile, "DevToolsActivePort")
+// waitForEndpoint waits for the browser to start answering on its remote
+// control port, and returns the address it can be driven through.
+func waitForEndpoint(spoken engine, port int, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		if endpoint, ok := readEndpoint(path); ok {
+		if endpoint, ok := probeEndpoint(spoken, port); ok {
 			return endpoint, nil
 		}
 
-		time.Sleep(portFilePollInterval)
+		time.Sleep(portProbeInterval)
 	}
 
 	return "", fmt.Errorf("%w within %s", ErrNoDebugPort, timeout)
 }
 
-// readEndpoint parses a DevToolsActivePort file, whose first line is the port
-// and whose second line is the browser's WebSocket path. It reports false
-// while the file is missing or still incomplete.
-func readEndpoint(path string) (string, bool) {
-	raw, err := os.ReadFile(path) //nolint:gosec // path is inside a directory this package created.
+// probeEndpoint asks the port whether a browser is there yet.
+//
+// Firefox serves WebDriver BiDi at a fixed path, so a connection is answer
+// enough. A Chromium-based browser has to be asked: its browser-level socket
+// carries an identifier only it knows.
+func probeEndpoint(spoken engine, port int) (string, bool) {
+	if spoken == engineFirefox {
+		conn, err := net.DialTimeout("tcp", localAddress(port), portProbeTimeout)
+		if err != nil {
+			return "", false
+		}
+		_ = conn.Close()
+
+		return fmt.Sprintf("ws://%s%s", localAddress(port), bidiSessionPath), true
+	}
+
+	return devToolsEndpoint(port)
+}
+
+// devToolsEndpoint reads the browser-level WebSocket address out of a
+// Chromium-based browser's own description of itself.
+func devToolsEndpoint(port int) (string, bool) {
+	client := &http.Client{Timeout: portProbeTimeout}
+
+	res, err := client.Get(fmt.Sprintf("http://%s/json/version", localAddress(port)))
 	if err != nil {
 		return "", false
 	}
+	defer func() {
+		_ = res.Body.Close()
+	}()
 
-	lines := strings.SplitN(strings.TrimSpace(string(raw)), "\n", 2)
-	if len(lines) != 2 || lines[0] == "" || lines[1] == "" {
+	var described struct {
+		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&described); err != nil {
 		return "", false
 	}
 
-	return fmt.Sprintf("ws://127.0.0.1:%s%s", strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])), true
+	return described.WebSocketDebuggerURL, described.WebSocketDebuggerURL != ""
+}
+
+// localAddress is the loopback address the browser was told to listen on.
+func localAddress(port int) string {
+	return fmt.Sprintf("127.0.0.1:%d", port)
 }
 
 // connect opens a driving session with the browser, whichever protocol it

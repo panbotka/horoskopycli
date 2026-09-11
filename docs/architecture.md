@@ -90,10 +90,11 @@ horoskopycli login
       ├─ find a browser                     --browser, else the system default, else PATH,
       │                                     else the usual macOS and Windows locations
       │
-      ├─ start it on a throwaway profile    with remote control on an unused port
+      ├─ pick a free port                   and start the browser on a throwaway profile
+      │                                     listening there
       │
-      ├─ learn where to drive it            Chromium: <profile>/DevToolsActivePort
-      │                                     Firefox:  "WebDriver BiDi listening on …" on stderr
+      ├─ wait for that port to answer       Chromium: GET /json/version names its socket
+      │                                     Firefox:  a connection is answer enough
       │
       ├─ ask for the cookie jar every second  until `ds` for horoskopy.cz appears
       │   └─ open horoskopy.cz once           if Seznam interrupted the return trip: visiting
@@ -109,9 +110,9 @@ outright. A killed browser leaves helper processes behind that write the profile
 out after it has been deleted — with the login cookie in it. That was observed with Chrome.
 
 Teardown therefore waits for the browser's remote control port to stop answering before
-deleting the profile, not for the process it started: with a snap or a launcher script, the
-process this CLI spawned exits at once while the real browser runs on. That was observed with
-Firefox. A kill and a couple of retries follow, in case the port outlives everything.
+deleting the profile, not for the process it started: with a snap, a launcher script or `open`,
+the process this CLI spawned exits at once while the real browser runs on. That was observed
+with Firefox. A kill and a couple of retries follow, in case the port outlives everything.
 
 ### Two protocols, one loop
 
@@ -168,6 +169,24 @@ apart from "signed in somewhere this CLI cannot see".
 If the default browser is one this CLI cannot drive — Safari, or something exotic — the search
 falls through to PATH and then to the usual install locations. Only Linux is tested against a
 real system; the other two are written from their documented behaviour and fall back safely.
+
+### Starting a browser people can actually see
+
+Two platform habits make "just run the executable" wrong.
+
+On **macOS** a browser is an application bundle, and running the binary inside it while another
+instance of the same bundle is already running — which it usually is — gives a process with no
+window. It starts, it answers on its remote control port, it even loads pages; there is simply
+nothing on screen to type into, so the login waits forever for a human who was never given a
+chance. `open -n -a <bundle> --args …` is the documented way to ask for a genuinely separate
+instance, and the one that comes with a window. The executable is still tried afterwards, for a
+browser installed outside a bundle.
+
+Because `open` returns immediately and hands the browser its own stdio, the endpoint cannot be
+read from the process any more. So the port is chosen here — `net.Listen` on :0, note the
+number, close it again — and the browser is told to use it. That also removed both of the
+previous ways of learning the endpoint, one per engine, and replaced them with waiting for the
+port to answer.
 
 ### Snap and the profile that cannot be read
 
