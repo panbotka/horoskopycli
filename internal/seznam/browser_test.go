@@ -2,8 +2,12 @@ package seznam
 
 import (
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -20,18 +24,56 @@ func stubExecutable(t *testing.T, dir, name string) string {
 	return path
 }
 
+func TestEngineFor(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		path          string
+		want          engine
+		wantSupported bool
+	}{
+		"firefox":            {path: "/usr/bin/firefox", want: engineFirefox, wantSupported: true},
+		"firefox on windows": {path: `C:\Program Files\Mozilla Firefox\firefox.exe`, want: engineFirefox, wantSupported: true},
+		"firefox on macos":   {path: "/Applications/Firefox.app/Contents/MacOS/firefox", want: engineFirefox, wantSupported: true},
+		"librewolf":          {path: "/usr/bin/librewolf", want: engineFirefox, wantSupported: true},
+		"chrome":             {path: "/opt/google/chrome/google-chrome", want: engineChromium, wantSupported: true},
+		"chromium":           {path: "/usr/bin/chromium-browser", want: engineChromium, wantSupported: true},
+		"brave":              {path: "/usr/bin/brave-browser", want: engineChromium, wantSupported: true},
+		"edge":               {path: "/usr/bin/microsoft-edge", want: engineChromium, wantSupported: true},
+		"safari":             {path: "/Applications/Safari.app/Contents/MacOS/Safari", wantSupported: false},
+		"something else":     {path: "/usr/bin/epiphany", wantSupported: false},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got, supported := engineFor(tt.path)
+			if supported != tt.wantSupported {
+				t.Fatalf("engineFor(%q) supported = %v, want %v", tt.path, supported, tt.wantSupported)
+			}
+			if supported && got != tt.want {
+				t.Errorf("engineFor(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFindBrowserPrefersTheRequestedOne(t *testing.T) {
 	dir := t.TempDir()
-	wanted := stubExecutable(t, dir, "my-browser")
+	wanted := stubExecutable(t, dir, "firefox")
 	stubExecutable(t, dir, "chromium")
 	t.Setenv("PATH", dir)
 
-	got, err := findBrowser("my-browser")
+	got, err := findBrowser("firefox")
 	if err != nil {
 		t.Fatalf("findBrowser returned %v", err)
 	}
-	if got != wanted {
-		t.Errorf("findBrowser(%q) = %q, want %q", "my-browser", got, wanted)
+	if got.path != wanted {
+		t.Errorf("findBrowser(%q) = %q, want %q", "firefox", got.path, wanted)
+	}
+	if got.engine != engineFirefox {
+		t.Errorf("findBrowser(%q) engine = %v, want Firefox", "firefox", got.engine)
 	}
 }
 
@@ -44,8 +86,11 @@ func TestFindBrowserSearchesPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findBrowser returned %v", err)
 	}
-	if got != wanted {
-		t.Errorf("findBrowser() = %q, want %q", got, wanted)
+	if got.path != wanted {
+		t.Errorf("findBrowser() = %q, want %q", got.path, wanted)
+	}
+	if got.engine != engineChromium {
+		t.Errorf("findBrowser() engine = %v, want Chromium", got.engine)
 	}
 }
 
@@ -53,8 +98,8 @@ func TestFindBrowserReportsAMissingBrowser(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	if _, err := findBrowser(""); !errors.Is(err, ErrNoBrowser) {
-		// A machine with Chrome installed in a standard location still finds
-		// one, which is a pass as far as this function is concerned.
+		// A machine with a browser installed in a standard location still
+		// finds one, which is a pass as far as this function is concerned.
 		if err == nil {
 			t.Skip("this machine has a browser in a well-known location")
 		}
@@ -68,6 +113,112 @@ func TestFindBrowserRejectsAnUnusableRequest(t *testing.T) {
 
 	if _, err := findBrowser("definitely-not-a-browser"); err == nil {
 		t.Error("findBrowser with a missing executable should fail")
+	}
+}
+
+func TestBrowserArgs(t *testing.T) {
+	t.Parallel()
+
+	firefox := strings.Join(browserArgs(engineFirefox, "/profile", "https://example.com/"), " ")
+	for _, want := range []string{"--profile /profile", "--no-remote", "--remote-debugging-port=0", "https://example.com/"} {
+		if !strings.Contains(firefox, want) {
+			t.Errorf("Firefox args %q should contain %q", firefox, want)
+		}
+	}
+	if strings.Contains(firefox, "--user-data-dir") {
+		t.Error("Firefox does not understand --user-data-dir")
+	}
+
+	chromium := strings.Join(browserArgs(engineChromium, "/profile", "https://example.com/"), " ")
+	for _, want := range []string{"--user-data-dir=/profile", "--remote-debugging-port=0", "https://example.com/"} {
+		if !strings.Contains(chromium, want) {
+			t.Errorf("Chromium args %q should contain %q", chromium, want)
+		}
+	}
+	if strings.Contains(chromium, "--profile ") {
+		t.Error("Chromium does not understand --profile")
+	}
+}
+
+func TestSnapProfileDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if _, ok := snapProfileDir("/usr/bin/firefox"); ok {
+		t.Error("snapProfileDir should report nothing without a snap directory")
+	}
+
+	snap := filepath.Join(home, "snap", "firefox", "common")
+	if err := os.MkdirAll(snap, 0o700); err != nil {
+		t.Fatalf("could not create the snap directory: %v", err)
+	}
+
+	got, ok := snapProfileDir("/usr/bin/firefox")
+	if !ok {
+		t.Fatal("snapProfileDir should find the snap directory")
+	}
+	if got != snap {
+		t.Errorf("snapProfileDir() = %q, want %q", got, snap)
+	}
+
+	// A browser that is not that snap keeps the ordinary temporary directory.
+	if _, ok := snapProfileDir("/opt/google/chrome/google-chrome"); ok {
+		t.Error("snapProfileDir should not send Chrome into the Firefox snap")
+	}
+}
+
+func TestNewProfileUsesTheSnapDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	snap := filepath.Join(home, "snap", "firefox", "common")
+	if err := os.MkdirAll(snap, 0o700); err != nil {
+		t.Fatalf("could not create the snap directory: %v", err)
+	}
+
+	profile, err := newProfile(foundBrowser{path: "/snap/bin/firefox", engine: engineFirefox})
+	if err != nil {
+		t.Fatalf("newProfile returned %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(profile)
+	})
+
+	if filepath.Dir(profile) != snap {
+		t.Errorf("newProfile() = %q, want it inside %q: a snap cannot read /tmp", profile, snap)
+	}
+}
+
+func TestWaitForAnnouncementFindsTheEndpoint(t *testing.T) {
+	t.Parallel()
+
+	output := strings.NewReader(
+		"*** You are running in headless mode.\n" +
+			"WebDriver BiDi listening on ws://127.0.0.1:43227\n" +
+			"console.warn: something else entirely\n")
+
+	got, err := waitForAnnouncement(output, 2*time.Second)
+	if err != nil {
+		t.Fatalf("waitForAnnouncement returned %v", err)
+	}
+	if got != "ws://127.0.0.1:43227" {
+		t.Errorf("waitForAnnouncement = %q, want the announced address", got)
+	}
+}
+
+func TestWaitForAnnouncementGivesUp(t *testing.T) {
+	t.Parallel()
+
+	// A browser that says nothing useful: the reader stays open, as a live
+	// process's output would.
+	reader, writer := io.Pipe()
+	t.Cleanup(func() {
+		_ = writer.Close()
+	})
+
+	_, err := waitForAnnouncement(reader, 100*time.Millisecond)
+	if !errors.Is(err, ErrNoDebugPort) {
+		t.Errorf("waitForAnnouncement = %v, want ErrNoDebugPort", err)
 	}
 }
 
@@ -144,6 +295,41 @@ func TestWaitForEndpointFindsALateFile(t *testing.T) {
 	}
 	if got != "ws://127.0.0.1:9222/devtools/browser/late" {
 		t.Errorf("waitForEndpoint = %q", got)
+	}
+}
+
+func TestBrowserWaitOrKillEndsAStubbornBrowser(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("could not start a stand-in for a browser: %v", err)
+	}
+
+	started := time.Now()
+	(&browser{cmd: cmd}).waitOrKill(50 * time.Millisecond)
+
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Errorf("waitOrKill took %s, want it to give up quickly", elapsed)
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err == nil {
+		t.Error("waitOrKill should have killed a browser that would not leave")
+	}
+}
+
+func TestBrowserWaitOrKillReturnsWhenTheBrowserLeaves(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("could not start a stand-in for a browser: %v", err)
+	}
+
+	started := time.Now()
+	(&browser{cmd: cmd}).waitOrKill(10 * time.Second)
+
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Errorf("waitOrKill waited %s for a browser that had already left", elapsed)
 	}
 }
 

@@ -69,16 +69,21 @@ echo "Zdálo se mi o starém domě." | horoskopycli snar
 horoskopycli logout                      # ends the session, at Seznam too
 ```
 
-`login` starts a Chrome-based browser on a throwaway profile, waits for you to sign in to
-Seznam, keeps the session cookie it is given and deletes the profile again. Your password never
-passes through the CLI. The session lasts about a year, so this is a once-a-year chore.
+`login` opens your default browser on a throwaway profile, waits for you to sign in to Seznam,
+keeps the session cookie it is given and deletes the profile again. Your password never passes
+through the CLI. The session lasts about a year, so this is a once-a-year chore.
+
+**Firefox and Chrome both work**, as do Brave, Edge, Vivaldi, Opera, Chromium and the Firefox
+forks — whichever of them is your default browser is the one that opens. Safari cannot be
+driven and is skipped. Because the profile is a fresh one, the window that opens has none of
+your logins in it, which is also why nothing of the login is left behind afterwards.
 
 Other ways to sign in:
 
 ```bash
-horoskopycli login --paste               # for a browser this CLI cannot drive, e.g. Firefox
-horoskopycli login --browser /path/to/chrome
-export HOROSKOPYCLI_DS=<cookie>          # for scripts and CI
+horoskopycli login --browser /path/to/browser   # pick one explicitly
+horoskopycli login --paste                      # no supported browser: paste the cookie
+export HOROSKOPYCLI_DS=<cookie>                 # for scripts and CI
 ```
 
 ⚠️ **The stored cookie is your whole Seznam account**, not just horoscopes — the same session

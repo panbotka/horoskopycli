@@ -35,6 +35,19 @@ const cookiePollInterval = time.Second
 // ErrLoginTimeout is returned when the login was not completed in time.
 var ErrLoginTimeout = errors.New("timed out waiting for the login to finish")
 
+// cookieSource is a browser this CLI started and can question. Chromium-based
+// browsers answer through cdpConn, Firefox through bidiConn.
+type cookieSource interface {
+	// cookies returns every cookie the browser currently holds.
+	cookies() ([]cookie, error)
+	// openTab opens a URL in a new tab.
+	openTab(url string) error
+	// closeBrowser asks the browser to shut itself down.
+	closeBrowser() error
+	// close releases the connection to the browser.
+	close() error
+}
+
 // LoginOptions tunes how Login runs.
 type LoginOptions struct {
 	// Browser is the browser executable to use. Empty means: find one.
@@ -51,10 +64,10 @@ type LoginOptions struct {
 // on a throwaway profile which is deleted afterwards, so nothing but the
 // cookie survives.
 //
-// It returns ErrNoBrowser when no Chrome-based browser is installed and
+// It returns ErrNoBrowser when no browser this CLI can drive is installed, and
 // ErrLoginTimeout when the user does not finish in time.
 func Login(ctx context.Context, opts LoginOptions) (Session, error) {
-	binary, err := findBrowser(opts.Browser)
+	found, err := findBrowser(opts.Browser)
 	if err != nil {
 		return Session{}, err
 	}
@@ -64,13 +77,13 @@ func Login(ctx context.Context, opts LoginOptions) (Session, error) {
 		timeout = DefaultLoginTimeout
 	}
 
-	started, err := launchBrowser(ctx, binary, loginURL, browserStartTimeout)
+	started, err := launchBrowser(ctx, found, loginURL, browserStartTimeout)
 	if err != nil {
 		return Session{}, err
 	}
 	defer started.stop()
 
-	conn, err := dialCDP(started.endpoint)
+	conn, err := started.connect()
 	if err != nil {
 		return Session{}, err
 	}
@@ -83,7 +96,7 @@ func Login(ctx context.Context, opts LoginOptions) (Session, error) {
 	}()
 
 	if opts.Progress != nil {
-		fmt.Fprintf(opts.Progress, "Waiting for the Seznam login in %s…\n", binary)
+		fmt.Fprintf(opts.Progress, "Waiting for the Seznam login in %s…\n", found.path)
 	}
 
 	return waitForSession(ctx, conn, timeout, cookiePollInterval)
@@ -91,7 +104,7 @@ func Login(ctx context.Context, opts LoginOptions) (Session, error) {
 
 // waitForSession polls the browser cookie jar every interval until the
 // horoskopy.cz session cookie appears, nudging a stalled login along the way.
-func waitForSession(ctx context.Context, conn *cdpConn, timeout, interval time.Duration) (Session, error) {
+func waitForSession(ctx context.Context, conn cookieSource, timeout, interval time.Duration) (Session, error) {
 	deadline := time.Now().Add(timeout)
 	nudged := false
 

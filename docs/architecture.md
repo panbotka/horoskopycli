@@ -20,8 +20,11 @@ main.go                        CLI: commands, argument parsing, usage text, exit
 └── internal/seznam
     ├── login.go               orchestrates a browser login, waits for the cookie
     ├── browser.go             finds and starts a browser on a throwaway profile
-    ├── cdp.go                 the DevTools commands used to read the cookie jar
-    ├── ws.go                  a small WebSocket client, because CDP speaks nothing else
+    ├── cdp.go                 DevTools protocol: Chrome and everything based on it
+    ├── bidi.go                WebDriver BiDi: Firefox and its forks
+    ├── ws.go                  a small WebSocket client, because both speak nothing else
+    ├── defaultbrowser.go      parsing the system's idea of a default browser
+    ├── browser_paths_*.go     where browsers live, per operating system
     ├── session.go             the stored session: load, save, forget
     └── account.go             login.horoskopy.cz: whose session is this, and revoke it
 ```
@@ -84,24 +87,75 @@ That leaves reading the cookie out of a browser, which is what `login` does:
 ```
 horoskopycli login
       │
-      ├─ find a Chrome-based browser        PATH, then the usual macOS locations
+      ├─ find a browser                     --browser, else the system default, else PATH,
+      │                                     else the usual macOS and Windows locations
       │
-      ├─ start it on a throwaway profile    --user-data-dir=<temp> --remote-debugging-port=0
+      ├─ start it on a throwaway profile    with remote control on an unused port
       │
-      ├─ read <profile>/DevToolsActivePort  the port the browser picked, plus its WS path
+      ├─ learn where to drive it            Chromium: <profile>/DevToolsActivePort
+      │                                     Firefox:  "WebDriver BiDi listening on …" on stderr
       │
-      ├─ Storage.getCookies every second    until `ds` for horoskopy.cz appears
-      │   └─ Target.createTarget            if Seznam interrupted the return trip, open the
-      │                                     site once: that is what hands the session over
+      ├─ ask for the cookie jar every second  until `ds` for horoskopy.cz appears
+      │   └─ open horoskopy.cz once           if Seznam interrupted the return trip: visiting
+      │                                       the site is what hands the session over
       │
       ├─ GET login.horoskopy.cz/api/v1/user/badge   confirm the cookie works, get the account
       │
       └─ save {cookie, account, expires}    ~/.config/horoskopycli/session.json, mode 0600
 ```
 
-The browser is then closed over CDP rather than killed. A killed browser leaves helper
-processes behind that write the profile directory back out after it has been deleted — with the
-login cookie in it.
+The browser is asked to close itself and then given time to go, rather than being killed
+outright. A killed browser leaves helper processes behind that write the profile directory back
+out after it has been deleted — with the login cookie in it. That was observed with Chrome, and
+`stop` now waits for the process to exit and retries the removal.
+
+### Two protocols, one loop
+
+Chrome and its relatives speak the DevTools protocol; Firefox speaks WebDriver BiDi and has no
+DevTools endpoint at all. The two are close enough in shape — a command in, an answer with the
+same id out — that only the vocabulary differs:
+
+| | Chromium (`cdp.go`) | Firefox (`bidi.go`) |
+|---|---|---|
+| endpoint | `<profile>/DevToolsActivePort` | announced on stderr, plus `/session` |
+| session | none needed | `session.new` first |
+| read cookies | `Storage.getCookies` | `storage.getCookies` |
+| open a tab | `Target.createTarget` | `browsingContext.create` |
+| shut down | `Browser.close` | `browser.close` |
+| cookie value | a plain string | `{type: "string", value: …}` |
+| expiry field | `expires` | `expiry` |
+
+Both satisfy `cookieSource`, so `waitForSession` — the loop that actually waits for the human —
+is written once and knows nothing about either protocol.
+
+One trap worth recording: BiDi's `storage.getCookies` domain filter matches **exactly**, so
+asking it for `horoskopy.cz` returns nothing at all, because the cookie is stored under
+`.horoskopy.cz`. The whole jar is read and filtered in Go instead, which is what the Chromium
+path does anyway.
+
+### Finding the browser a person actually uses
+
+`login` opens the browser the user would expect, not whichever one happens to be first in PATH:
+
+- **Linux** — `xdg-settings get default-web-browser` names a `.desktop` file; its `Exec` line
+  names the binary. Only the `[Desktop Entry]` section counts, since the actions further down
+  the file have `Exec` lines of their own.
+- **macOS** — LaunchServices records the https handler in a binary plist, which `plutil` can
+  convert to JSON; the bundle identifier is mapped to the executable inside the application.
+- **Windows** — the registry holds a `ProgId` for https under `UrlAssociations`, and that key's
+  `shell\open\command` holds the quoted path to the executable.
+
+If the default browser is one this CLI cannot drive — Safari, or something exotic — the search
+falls through to PATH and then to the usual install locations. Only Linux is tested against a
+real system; the other two are written from their documented behaviour and fall back safely.
+
+### Snap and the profile that cannot be read
+
+A snap-packaged browser gets a private `/tmp`, and cannot see hidden directories in the home
+directory either. A profile in `os.MkdirTemp("")` is therefore invisible to it: Ubuntu's Firefox
+starts, finds nothing, and never announces its remote agent. Verified on Ubuntu with snap
+Firefox 154, where `/tmp/…` and `~/.cache/…` both fail and `~/snap/firefox/common/…` works, so
+that is where the throwaway profile goes when the browser looks like a snap.
 
 `logout` is not just a file deletion: it POSTs to `login.horoskopy.cz/logout`, which invalidates
 the session at Seznam, so a copied cookie stops working too. The service is particular about
@@ -109,9 +163,10 @@ that request — a GET is answered with 403 and a POST without a JSON body with 
 
 ### Why a hand-written WebSocket client
 
-The DevTools protocol speaks WebSocket and nothing else. `chromedp` would pull five modules in
-for one command (`Storage.getCookies`), so `ws.go` implements the little of RFC 6455 that is
-needed: one masked text frame out, one message in, continuation and control frames handled.
+Both protocols speak WebSocket and nothing else. `chromedp` would pull five modules in for one
+command, and would not help with Firefox at all, so `ws.go` implements the little of RFC 6455
+that is needed: one masked text frame out, one message in, continuation and control frames
+handled.
 
 The subtle part is the handshake: the browser often sends its first frame in the same packet as
 the upgrade response, so the buffered reader used for the headers has to be the one the
@@ -174,7 +229,7 @@ check, a renumbering would print the wrong sign's horoscope and look perfectly f
 | `ErrUnauthorized`      | the dream book refused the session                    | "run `horoskopycli login`"     |
 | `ErrNoSession`         | no session stored yet                                 | "run `horoskopycli login`"     |
 | `ErrSessionExpired`    | the login service says the cookie is signed out       | error message, exit 1          |
-| `ErrNoBrowser`         | no Chrome-based browser to run the login in           | error message, exit 1          |
+| `ErrNoBrowser`         | no browser the CLI can drive                          | error message, exit 1          |
 | `ErrLoginTimeout`      | the user did not finish signing in                    | error message, exit 1          |
 
 Only `ErrUnavailable` prints the apology; bad user input is not an outage.
@@ -192,5 +247,11 @@ speaks the DevTools protocol over an in-memory pipe. `waitForSession` takes its 
 an argument so the tests do not wait a second per poll.
 
 No test reaches the real horoskopy.cz, Seznam, or a real browser. The one thing that cannot be
-covered this way is starting an actual browser; `findBrowser`, `waitForEndpoint` and
-`readEndpoint` are tested individually instead.
+covered this way is starting an actual browser; `findBrowser`, `waitForEndpoint`,
+`waitForAnnouncement`, `readEndpoint`, `browserArgs`, `snapProfileDir` and `waitOrKill` are
+tested individually instead, and the platform-specific parsers (`.desktop` files, the macOS
+handler list, `reg query` output) have tests of their own that run everywhere.
+
+Both browser paths were also exercised by hand against a live Seznam account before merging:
+Chromium on Linux/ARM64 and Firefox 154 on Ubuntu, each through login, an interpreted dream and
+a logout that leaves the cookie rejected.
